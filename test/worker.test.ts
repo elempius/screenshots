@@ -25,6 +25,13 @@ async function put(key: string, value: string): Promise<R2Object> {
 }
 
 describe("screenshot serving", () => {
+  it("advertises HEAD in method-not-allowed responses", async () => {
+    const response = await request("/", { method: "PUT" });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, HEAD, POST");
+  });
+
   it("returns 412 when If-Match fails", async () => {
     const key = "conditional-test";
     await put(key, "payload");

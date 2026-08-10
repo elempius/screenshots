@@ -36,7 +36,7 @@ export default {
         case "HEAD":
           return await handleServe(request, env, url, ctx);
         default:
-          return text("ERROR: method not allowed", 405, { allow: "GET, POST" });
+          return text("ERROR: method not allowed", 405, { allow: "GET, HEAD, POST" });
       }
     } catch (err) {
       console.error(JSON.stringify({ msg: "unhandled error", error: String(err) }));
