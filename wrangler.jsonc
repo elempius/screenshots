@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "screenshots",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "screenshots.elempius.me/*", "zone_name": "elempius.me" }
+  ],
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "screenshots" }
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}
