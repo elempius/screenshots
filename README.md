@@ -11,10 +11,10 @@ pnpm run typecheck
 pnpm run deploy:dry-run
 ```
 
-Set local upload authentication in `.dev.vars`:
+Set local upload authentication in `.dev.vars` (see `.dev.vars.example`):
 
-```text
-UPLOAD_TOKEN=your-local-token
+```sh
+cp .dev.vars.example .dev.vars
 ```
 
 Uploads authenticate with an `Authorization: Bearer <token>` header, keeping

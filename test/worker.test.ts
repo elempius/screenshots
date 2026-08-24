@@ -170,4 +170,13 @@ describe("screenshot serving", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("payload");
   });
+
+  it("includes last-modified from the upload time", async () => {
+    const key = "last-modified-test";
+    const object = await put(key, "payload");
+
+    const response = await request(`/${key}`);
+
+    expect(response.headers.get("last-modified")).toBe(object.uploaded.toUTCString());
+  });
 });

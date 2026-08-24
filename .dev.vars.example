@@ -1,0 +1,2 @@
+# Copy to `.dev.vars` and fill in a local-only token (not the production one).
+UPLOAD_TOKEN=your-local-token

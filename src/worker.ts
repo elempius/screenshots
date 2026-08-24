@@ -188,6 +188,7 @@ function serveHeaders(object: R2Object): Headers {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("etag", object.httpEtag);
+  headers.set("last-modified", object.uploaded.toUTCString());
   headers.set("accept-ranges", "bytes");
   headers.set("x-content-type-options", "nosniff");
   if (!headers.has("cache-control")) {
