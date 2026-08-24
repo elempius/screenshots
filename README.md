@@ -17,6 +17,10 @@ Set local upload authentication in `.dev.vars`:
 UPLOAD_TOKEN=your-local-token
 ```
 
+Uploads authenticate with an `Authorization: Bearer <token>` header. A legacy
+`?token=` query parameter is also accepted but is deprecated because URLs with
+tokens can leak into logs and history.
+
 ## Deploy
 
 Push to `main`. GitHub Actions deploys automatically.

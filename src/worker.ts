@@ -49,7 +49,7 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
   if (url.pathname !== ROUTE_PREFIX) {
     return text("ERROR: not found", 404);
   }
-  if (!(await isAuthorized(url, env))) {
+  if (!(await isAuthorized(request, url, env))) {
     return text("ERROR: unauthorized", 401);
   }
 
@@ -82,10 +82,19 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
   }
 
   const contentType = normalizeContentType(file.type);
-  const key = generateKey(contentType);
-  await env.BUCKET.put(key, file, {
-    httpMetadata: { contentType, cacheControl: IMMUTABLE_CACHE },
-  });
+  const metadata = { httpMetadata: { contentType, cacheControl: IMMUTABLE_CACHE } };
+
+  // Retry in the (astronomically unlikely) event of a slug collision with an
+  // existing object; a null result means the precondition blocked the write.
+  let key = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    key = generateKey(contentType);
+    const written = await env.BUCKET.put(key, file, {
+      ...metadata,
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    if (written !== null) break;
+  }
 
   console.log(JSON.stringify({ msg: "uploaded", key, size: file.size, contentType }));
   return text(`SUCCESS: ${url.origin}${ROUTE_PREFIX}${key}`, 200);
@@ -110,24 +119,17 @@ async function handleServe(
     return notFoundPage(request.method);
   }
 
-  if (request.method === "HEAD") {
-    const object = await env.BUCKET.get(key, { onlyIf: request.headers });
-    if (object === null) {
-      return notFoundPage(request.method);
-    }
-    const headers = serveHeaders(object);
-    if (!("body" in object) || object.body === null) {
-      return new Response(null, { status: conditionalFailureStatus(request.headers), headers });
-    }
-    headers.set("content-length", String(object.size));
-    return new Response(null, { headers });
-  }
+  const isHead = request.method === "HEAD";
 
+  // Cache under the normalized (query-free) URL so variants like /key.png?v=1
+  // share one cache entry instead of bypassing and fragmenting the cache.
+  // ignoreMethod lets GET-cached entries also serve HEAD requests.
+  const cacheRequest = normalizedCacheRequest(request);
   const cacheableRequest = !request.headers.has("if-match") && !request.headers.has("if-unmodified-since");
   if (cacheableRequest) {
-    const cached = await caches.default.match(request);
+    const cached = await caches.default.match(cacheRequest, { ignoreMethod: true });
     if (cached) {
-      return cached;
+      return isHead ? headFrom(cached) : cached;
     }
   }
 
@@ -139,32 +141,42 @@ async function handleServe(
     return notFoundPage(request.method);
   }
 
+  // R2 reports a range even when the client did not send one (a full-object
+  // range), so decide partial vs. full from whether it covers the whole object.
+  const range = object.range ? parseRange(object.range, object.size) : undefined;
+  const partial = !!range && (range.offset !== 0 || range.length !== object.size);
+  const status = partial ? 206 : 200;
+
   const headers = serveHeaders(object);
+  headers.set("content-length", String(range?.length ?? object.size));
+  if (partial && range) {
+    headers.set("content-range", `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`);
+  }
   if (!("body" in object) || object.body === null) {
     return new Response(null, { status: conditionalFailureStatus(request.headers), headers });
   }
 
-  const status = object.range ? 206 : 200;
-  if (object.range) {
-    const offset = "suffix" in object.range && object.range.suffix !== undefined
-      ? object.size - Math.min(object.range.suffix, object.size)
-      : "offset" in object.range
-        ? object.range.offset ?? 0
-        : 0;
-    const length = "suffix" in object.range && object.range.suffix !== undefined
-      ? Math.min(object.range.suffix, object.size)
-      : "length" in object.range
-        ? object.range.length ?? object.size - offset
-        : object.size - offset;
-    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
-    headers.set("content-length", String(length));
-  }
-
   const response = new Response(object.body, { status, headers });
+  if (isHead) {
+    return headFrom(response);
+  }
   if (status === 200) {
-    ctx.waitUntil(caches.default.put(request, response.clone()));
+    ctx.waitUntil(caches.default.put(cacheRequest, response.clone()));
   }
   return response;
+}
+
+function normalizedCacheRequest(request: Request): Request {
+  const url = new URL(request.url);
+  url.search = "";
+  return new Request(url, request);
+}
+
+function headFrom(response: Response): Response {
+  return new Response(null, {
+    status: response.status,
+    headers: response.headers,
+  });
 }
 
 function serveHeaders(object: R2Object): Headers {
@@ -204,8 +216,13 @@ function limitRequestBody(request: Request, maxBytes: number): Request {
   return new Request(request, { body });
 }
 
-async function isAuthorized(url: URL, env: Env): Promise<boolean> {
-  const provided = url.searchParams.get("token");
+// Prefer the Authorization header so the token stays out of URLs and access
+// logs. The query parameter is kept only as a legacy fallback.
+async function isAuthorized(request: Request, url: URL, env: Env): Promise<boolean> {
+  const header = request.headers.get("authorization");
+  const provided = header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length).trim()
+    : url.searchParams.get("token");
   if (!provided || !env.UPLOAD_TOKEN) {
     return false;
   }
@@ -250,6 +267,22 @@ function normalizeContentType(rawType: string): string {
 
 function extensionFor(contentType: string): string {
   return IMAGE_EXTENSIONS[contentType] ?? "bin";
+}
+
+// Note: R2's range objects carry all keys (e.g. suffix: undefined), so test
+// values rather than key presence.
+function parseRange(range: R2Range, size: number): { offset: number; length: number } {
+  const r = range as {
+    suffix?: number;
+    offset?: number;
+    length?: number;
+  };
+  if (r.suffix !== undefined) {
+    const length = Math.min(r.suffix, size);
+    return { offset: size - length, length };
+  }
+  const offset = r.offset ?? 0;
+  return { offset, length: Math.min(r.length ?? size - offset, size - offset) };
 }
 
 function parseMaxBytes(env: Env): number {

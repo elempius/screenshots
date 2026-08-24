@@ -24,6 +24,87 @@ async function put(key: string, value: string): Promise<R2Object> {
   return (await env.BUCKET.put(key, value, { httpMetadata: { contentType: "text/plain" } }))!;
 }
 
+async function upload(body: BodyInit | undefined, init?: RequestInit): Promise<Response> {
+  return request("/?token=test-token", {
+    method: "POST",
+    body,
+    ...init,
+  });
+}
+
+function multipart(file: { name: string; type: string; contents?: string }): FormData {
+  const form = new FormData();
+  form.set("file", new File([file.contents ?? "data"], file.name, { type: file.type }));
+  return form;
+}
+
+describe("screenshot uploading", () => {
+  it("accepts uploads with a bearer token and stores the file", async () => {
+    const response = await request("/", {
+      method: "POST",
+      headers: { authorization: "Bearer test-token" },
+      body: multipart({ name: "shot.png", type: "image/png" }),
+    });
+
+    expect(response.status).toBe(200);
+    const url = await response.text();
+    expect(url).toMatch(/^SUCCESS: https:\/\/screenshots\.example\/[\w-]+\.png$/);
+
+    const key = url.split("/").pop()!;
+    keys.push(key);
+    const object = await env.BUCKET.get(key);
+    expect(await object?.text()).toBe("data");
+    expect(object?.httpMetadata?.contentType).toBe("image/png");
+    expect(object?.httpMetadata?.cacheControl).toContain("immutable");
+  });
+
+  it("still accepts the legacy query-parameter token", async () => {
+    const response = await upload(multipart({ name: "a.png", type: "image/png" }));
+    expect(response.status).toBe(200);
+    const key = (await response.text()).split("/").pop()!;
+    keys.push(key);
+  });
+
+  it("rejects missing or wrong credentials", async () => {
+    const noAuth = await request("/", { method: "POST" });
+    expect(noAuth.status).toBe(401);
+
+    const wrongToken = await request("/?token=nope", {
+      method: "POST",
+      body: multipart({ name: "a.png", type: "image/png" }),
+    });
+    expect(wrongToken.status).toBe(401);
+  });
+
+  it("rejects non-multipart bodies", async () => {
+    const response = await upload("not-a-form");
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects an empty or missing file field", async () => {
+    const emptyFile = await upload(new FormData());
+    expect(emptyFile.status).toBe(400);
+  });
+
+  it("rejects payloads over the configured limit", async () => {
+    const response = await upload(multipart({ name: "big.png", type: "image/png", contents: "x" }), {
+      headers: { "content-length": String(64 * 1024 * 1024) },
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it("falls back to octet-stream for unknown types", async () => {
+    const response = await upload(multipart({ name: "x.txt", type: "text/plain" }));
+    expect(response.status).toBe(200);
+
+    const key = (await response.text()).split("/").pop()!;
+    keys.push(key);
+    expect(key.endsWith(".bin")).toBe(true);
+    const object = await env.BUCKET.get(key);
+    expect(object?.httpMetadata?.contentType).toBe("application/octet-stream");
+  });
+});
+
 describe("screenshot serving", () => {
   it("advertises HEAD in method-not-allowed responses", async () => {
     const response = await request("/", { method: "PUT" });
@@ -66,5 +147,26 @@ describe("screenshot serving", () => {
     });
 
     expect(response.status).toBe(304);
+  });
+
+  it("serves HEAD with an explicit content-length", async () => {
+    const key = "head-length-test";
+    await put(key, "payload");
+
+    const response = await request(`/${key}`, { method: "HEAD" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-length")).toBe("7");
+    expect(await response.text()).toBe("");
+  });
+
+  it("serves requests with query strings under the same key", async () => {
+    const key = "query-string-test";
+    await put(key, "payload");
+
+    const response = await request(`/${key}?download=1&v=2`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("payload");
   });
 });
