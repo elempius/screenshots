@@ -25,10 +25,13 @@ async function put(key: string, value: string): Promise<R2Object> {
 }
 
 async function upload(body: BodyInit | undefined, init?: RequestInit): Promise<Response> {
-  return request("/?token=test-token", {
+  const headers = new Headers(init?.headers);
+  headers.set("authorization", "Bearer test-token");
+  return request("/", {
     method: "POST",
     body,
     ...init,
+    headers,
   });
 }
 
@@ -58,22 +61,22 @@ describe("screenshot uploading", () => {
     expect(object?.httpMetadata?.cacheControl).toContain("immutable");
   });
 
-  it("still accepts the legacy query-parameter token", async () => {
-    const response = await upload(multipart({ name: "a.png", type: "image/png" }));
-    expect(response.status).toBe(200);
-    const key = (await response.text()).split("/").pop()!;
-    keys.push(key);
-  });
-
-  it("rejects missing or wrong credentials", async () => {
+  it("rejects uploads without credentials", async () => {
     const noAuth = await request("/", { method: "POST" });
     expect(noAuth.status).toBe(401);
 
-    const wrongToken = await request("/?token=nope", {
+    const wrongToken = await request("/", {
       method: "POST",
+      headers: { authorization: "Bearer nope" },
       body: multipart({ name: "a.png", type: "image/png" }),
     });
     expect(wrongToken.status).toBe(401);
+
+    const queryToken = await request("/?token=test-token", {
+      method: "POST",
+      body: multipart({ name: "a.png", type: "image/png" }),
+    });
+    expect(queryToken.status).toBe(401);
   });
 
   it("rejects non-multipart bodies", async () => {
@@ -93,15 +96,13 @@ describe("screenshot uploading", () => {
     expect(response.status).toBe(413);
   });
 
-  it("falls back to octet-stream for unknown types", async () => {
+  it("rejects unsupported content types", async () => {
     const response = await upload(multipart({ name: "x.txt", type: "text/plain" }));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(415);
+    expect(response.headers.get("accept")).toContain("image/png");
 
-    const key = (await response.text()).split("/").pop()!;
-    keys.push(key);
-    expect(key.endsWith(".bin")).toBe(true);
-    const object = await env.BUCKET.get(key);
-    expect(object?.httpMetadata?.contentType).toBe("application/octet-stream");
+    const missingType = await upload(multipart({ name: "y.bin", type: "" }));
+    expect(missingType.status).toBe(415);
   });
 });
 

@@ -49,7 +49,7 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
   if (url.pathname !== ROUTE_PREFIX) {
     return text("ERROR: not found", 404);
   }
-  if (!(await isAuthorized(request, url, env))) {
+  if (!(await isAuthorized(request, env))) {
     return text("ERROR: unauthorized", 401);
   }
 
@@ -82,6 +82,11 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
   }
 
   const contentType = normalizeContentType(file.type);
+  if (contentType === null) {
+    return text("ERROR: unsupported content type", 415, {
+      accept: Object.keys(IMAGE_EXTENSIONS).join(", "),
+    });
+  }
   const metadata = { httpMetadata: { contentType, cacheControl: IMMUTABLE_CACHE } };
 
   // Retry in the (astronomically unlikely) event of a slug collision with an
@@ -216,16 +221,13 @@ function limitRequestBody(request: Request, maxBytes: number): Request {
   return new Request(request, { body });
 }
 
-// Prefer the Authorization header so the token stays out of URLs and access
-// logs. The query parameter is kept only as a legacy fallback.
-async function isAuthorized(request: Request, url: URL, env: Env): Promise<boolean> {
+// Requires an Authorization bearer token so it never appears in URLs or logs.
+async function isAuthorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get("authorization");
-  const provided = header?.startsWith("Bearer ")
-    ? header.slice("Bearer ".length).trim()
-    : url.searchParams.get("token");
-  if (!provided || !env.UPLOAD_TOKEN) {
+  if (!header?.startsWith("Bearer ") || !env.UPLOAD_TOKEN) {
     return false;
   }
+  const provided = header.slice("Bearer ".length).trim();
   return await constantTimeEquals(provided, env.UPLOAD_TOKEN);
 }
 
@@ -260,13 +262,14 @@ function randomSlug(): string {
   return slug;
 }
 
-function normalizeContentType(rawType: string): string {
+// Returns null for unknown types so unsupported uploads are rejected.
+function normalizeContentType(rawType: string): string | null {
   const type = rawType.split(";")[0]?.trim().toLowerCase() ?? "";
-  return type in IMAGE_EXTENSIONS ? type : "application/octet-stream";
+  return type in IMAGE_EXTENSIONS ? type : null;
 }
 
 function extensionFor(contentType: string): string {
-  return IMAGE_EXTENSIONS[contentType] ?? "bin";
+  return IMAGE_EXTENSIONS[contentType];
 }
 
 // Note: R2's range objects carry all keys (e.g. suffix: undefined), so test

@@ -17,9 +17,11 @@ Set local upload authentication in `.dev.vars`:
 UPLOAD_TOKEN=your-local-token
 ```
 
-Uploads authenticate with an `Authorization: Bearer <token>` header. A legacy
-`?token=` query parameter is also accepted but is deprecated because URLs with
-tokens can leak into logs and history.
+Uploads authenticate with an `Authorization: Bearer <token>` header, keeping
+the token out of URLs and access logs.
+
+Only image uploads are accepted (`png`, `jpeg`, `webp`, `gif`, `heic`, `heif`,
+`tiff`, `bmp`, `avif`); other content types are rejected with `415`.
 
 ## Deploy
 
